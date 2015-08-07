@@ -1,0 +1,300 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "vancluevertech.com CloudFormation intro template",
+
+  "Parameters": {
+    "KeyPair": {
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "Description": "SSH key that will be used for EC2 instances (set up in web console)",
+      "ConstraintDescription": "needs to be an existing EC2 keypair (set up in web console)"
+    },
+    "SSHAllowIPAddress": {
+      "Type": "String",
+      "AllowedPattern": "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\/32",
+      "Description": "IP address to allow SSH from (only /32s allowed)",
+      "ConstraintDescription": "needs to be in A.B.C.D/32 form"
+    }
+  },
+
+  "Mappings": {
+    "RegionMap": {
+      "us-east-1": { "AMI": "ami-1ecae776" },
+      "us-west-1": { "AMI": "ami-e7527ed7" },
+      "us-west-2": { "AMI": "ami-d114f295" }
+    },
+    "NatRegionMap": {
+      "us-east-1": { "AMI": "ami-303b1458" },
+      "us-west-1": { "AMI": "ami-7da94839" },
+      "us-west-2": { "AMI": "ami-69ae8259" }
+    }
+  },
+
+  "Resources": {
+    "VCTSLabVPC1": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.0.0.0/16",
+        "EnableDnsHostnames": true,
+        "Tags": [ { "Key": "resclass", "Value": "vcts-lab-vpc" } ]
+      }
+    },
+    "VCTSLabSubnet1": {
+    "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "CidrBlock": "10.0.0.0/24",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          { "Key": "resclass", "Value": "vcts-lab-subnet" },
+          { "Key": "subnet-type", "Value": "public" }
+        ],
+        "VpcId": { "Ref": "VCTSLabVPC1" }
+      }
+    },
+    "VCTSLabSubnet2": {
+    "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "CidrBlock": "10.0.1.0/24",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          { "Key": "resclass", "Value": "vcts-lab-subnet" },
+          { "Key": "subnet-type", "Value": "private" }
+        ],
+        "VpcId": { "Ref": "VCTSLabVPC1" },
+        "AvailabilityZone": { "Fn::GetAtt" : [ "VCTSLabSubnet1", "AvailabilityZone" ] }
+      }
+    },
+    "VCTSLabGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [ { "Key": "resclass", "Value": "vcts-lab-gateway" } ]
+      }
+    },
+    "VCTSLabGatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "InternetGatewayId": { "Ref": "VCTSLabGateway" },
+        "VpcId": { "Ref": "VCTSLabVPC1" }
+      }
+    },
+    "VCTSLabPublicRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": { "Ref": "VCTSLabVPC1" },
+        "Tags": [
+          { "Key": "resclass", "Value": "vcts-lab-routetable" },
+          { "Key": "routetable-type", "Value": "public" }
+        ]
+      }
+    },
+    "VCTSLabPublicDefaultRoute": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": { "Ref": "VCTSLabGateway" },
+        "RouteTableId": { "Ref": "VCTSLabPublicRouteTable" }
+      }
+    },
+    "VCTSLabPublicSubnet1Assoc": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": { "Ref": "VCTSLabSubnet1" },
+        "RouteTableId": { "Ref": "VCTSLabPublicRouteTable" }
+      }
+    },
+    "VCTSLabPrivateRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": { "Ref": "VCTSLabVPC1" },
+        "Tags": [
+          { "Key": "resclass", "Value": "vcts-lab-routetable" },
+          { "Key": "routetable-type", "Value": "private" }
+        ]
+      }
+    },
+    "VCTSLabPrivateDefaultRoute": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "InstanceId": { "Ref": "VCTSLabNatGw" },
+        "RouteTableId": { "Ref": "VCTSLabPrivateRouteTable" }
+      }
+    },
+    "VCTSLabPrivateSubnet2Assoc": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": { "Ref": "VCTSLabSubnet2" },
+        "RouteTableId": { "Ref": "VCTSLabPrivateRouteTable" }
+      }
+    },
+    "VCTSNatSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "Tags": [ { "Key": "resclass", "Value": "vcts-lab-sg" } ],
+        "GroupDescription": "NAT (External) VCTS security group",
+        "VpcId": { "Ref": "VCTSLabVPC1" },
+        "SecurityGroupIngress": [
+          { "IpProtocol": "tcp", "CidrIp": "10.0.1.0/24", "FromPort": "80", "ToPort": "80" },
+          { "IpProtocol": "tcp", "CidrIp": "10.0.1.0/24", "FromPort": "443", "ToPort": "443" },
+          { "IpProtocol": "tcp", "CidrIp": { "Ref": "SSHAllowIPAddress" }, "FromPort": "22", "ToPort": "22" }
+        ],
+        "SecurityGroupEgress": [
+          { "IpProtocol": "tcp", "CidrIp": "0.0.0.0/0", "FromPort": "22", "ToPort": "22" },
+          { "IpProtocol": "tcp", "CidrIp": "0.0.0.0/0", "FromPort": "80", "ToPort": "80" },
+          { "IpProtocol": "tcp", "CidrIp": "0.0.0.0/0", "FromPort": "443", "ToPort": "443" }
+        ]
+      }
+    },
+    "VCTSPrivateSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "Tags": [ { "Key": "resclass", "Value": "vcts-lab-sg" } ],
+        "GroupDescription": "Private (Internal) VCTS security group",
+        "VpcId": { "Ref": "VCTSLabVPC1" },
+        "SecurityGroupIngress": [
+          { "IpProtocol": "-1", "CidrIp": "0.0.0.0/0" }
+        ],
+        "SecurityGroupEgress": [
+          { "IpProtocol": "-1", "CidrIp": "0.0.0.0/0" }
+        ]
+      }
+    },
+    "VCTSElbSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "Tags": [ { "Key": "resclass", "Value": "vcts-lab-sg" } ],
+        "GroupDescription": "ELB (load balancer) VCTS security group",
+        "VpcId": { "Ref": "VCTSLabVPC1" },
+        "SecurityGroupIngress": [
+          { "IpProtocol": "tcp", "CidrIp": "0.0.0.0/0", "FromPort": "80", "ToPort": "80" },
+          { "IpProtocol": "tcp", "CidrIp": "0.0.0.0/0", "FromPort": "443", "ToPort": "443" }
+        ],
+        "SecurityGroupEgress": [
+          { "IpProtocol": "tcp", "CidrIp": "0.0.0.0/0", "FromPort": "80", "ToPort": "80" },
+          { "IpProtocol": "tcp", "CidrIp": "0.0.0.0/0", "FromPort": "443", "ToPort": "443" }
+        ]
+      }
+    },
+    "VCTSLabNatGw": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": { "Fn::FindInMap": [ "NatRegionMap", { "Ref": "AWS::Region" }, "AMI" ] },
+        "InstanceType": "t2.micro",
+        "KeyName": { "Ref": "KeyPair" },
+        "SubnetId": { "Ref": "VCTSLabSubnet1" },
+        "SourceDestCheck": false,
+        "SecurityGroupIds": [ { "Ref": "VCTSNatSecurityGroup" } ],
+        "Tags": [ { "Key": "resclass", "Value": "vcts-lab-natgw" } ],
+        "UserData": { "Fn::Base64": { "Fn::Join": [ "", [
+          "#!/bin/bash -xe\n",
+          "/usr/bin/yum -y update\n",
+          "echo \"/opt/aws/bin/cfn-signal -e $? ",
+          "  --stack ", { "Ref": "AWS::StackName" }, " ",
+          "  --resource VCTSLabNatGw ",
+          "  --region ", { "Ref": "AWS::Region" }, " ",
+          "  && sed -i 's#^/opt/aws/bin/cfn-signal .*\\$##g' ",
+          "  /etc/rc.local\" >> /etc/rc.local\n",
+          "/sbin/reboot\n"
+        ]]}}
+      },
+      "CreationPolicy" : { "ResourceSignal" : { "Count" : 1, "Timeout" : "PT10M" } }
+    },
+    "VCTSLabELB1": {
+      "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties": {
+         "HealthCheck": {
+           "HealthyThreshold": "2",
+           "Interval": "5",
+           "Target": "HTTP:80/",
+           "Timeout": "3",
+           "UnhealthyThreshold": "2"
+         },
+         "Listeners": [{
+             "InstancePort": "80",
+             "InstanceProtocol": "HTTP",
+             "LoadBalancerPort": "80",
+             "Protocol": "HTTP"
+         }],
+         "Scheme": "internet-facing",
+         "Subnets": [ { "Ref": "VCTSLabSubnet1" } ],
+         "SecurityGroups": [ { "Ref": "VCTSElbSecurityGroup" } ],
+         "Instances": [
+           { "Ref": "VCTSLabSrv1" },
+           { "Ref": "VCTSLabSrv2" }
+         ],
+         "Tags": [ { "Key": "resclass", "Value": "vcts-lab-elb" } ]
+      }
+    },
+    "VCTSLabSrv1": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": { "Fn::FindInMap": [ "RegionMap", { "Ref": "AWS::Region" }, "AMI" ] },
+        "InstanceType": "t2.micro",
+        "KeyName": { "Ref": "KeyPair" },
+        "SubnetId": { "Ref": "VCTSLabSubnet2" },
+        "SecurityGroupIds": [ { "Ref": "VCTSPrivateSecurityGroup" } ],
+        "Tags": [ { "Key": "resclass", "Value": "vcts-lab-srv" } ],
+        "UserData": { "Fn::Base64": { "Fn::Join": [ "", [
+          "#!/bin/bash -xe\n",
+          "/usr/bin/yum -y update\n",
+          "/usr/bin/yum -y install httpd\n",
+          "/sbin/chkconfig httpd on\n",
+          "echo '<html><head></head><body>vcts-lab-srv1</body></html>' > /var/www/html/index.html\n",
+          "echo \"/opt/aws/bin/cfn-signal -e $? ",
+          "  --stack ", { "Ref": "AWS::StackName" }, " ",
+          "  --resource VCTSLabSrv1 ",
+          "  --region ", { "Ref": "AWS::Region" }, " ",
+          "  && sed -i 's#^/opt/aws/bin/cfn-signal .*\\$##g' ",
+          "  /etc/rc.local\" >> /etc/rc.local\n",
+          "/sbin/reboot\n"
+        ]]}}
+      },
+      "CreationPolicy" : { "ResourceSignal" : { "Count" : 1, "Timeout" : "PT10M" } },
+      "DependsOn": "VCTSLabNatGw"
+    },
+    "VCTSLabSrv2": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": { "Fn::FindInMap": [ "RegionMap", { "Ref": "AWS::Region" }, "AMI" ] },
+        "InstanceType": "t2.micro",
+        "KeyName": { "Ref": "KeyPair" },
+        "SubnetId": { "Ref": "VCTSLabSubnet2" },
+        "SecurityGroupIds": [ { "Ref": "VCTSPrivateSecurityGroup" } ],
+        "Tags": [ { "Key": "resclass", "Value": "vcts-lab-srv" } ],
+        "UserData": { "Fn::Base64": { "Fn::Join": [ "", [
+          "#!/bin/bash -xe\n",
+          "/usr/bin/yum -y update\n",
+          "/usr/bin/yum -y install httpd\n",
+          "/sbin/chkconfig httpd on\n",
+          "echo '<html><head></head><body>vcts-lab-srv2</body></html>' > /var/www/html/index.html\n",
+          "echo \"/opt/aws/bin/cfn-signal -e $? ",
+          "  --stack ", { "Ref": "AWS::StackName" }, " ",
+          "  --resource VCTSLabSrv2 ",
+          "  --region ", { "Ref": "AWS::Region" }, " ",
+          "  && sed -i 's#^/opt/aws/bin/cfn-signal .*\\$##g' ",
+          "  /etc/rc.local\" >> /etc/rc.local\n",
+          "/sbin/reboot\n"
+        ]]}}
+      },
+      "CreationPolicy" : { "ResourceSignal" : { "Count" : 1, "Timeout" : "PT10M" } },
+      "DependsOn": "VCTSLabNatGw"
+    }
+  },
+  "Outputs": {
+    "NatIPAddr": {
+      "Description": "IP address of the NAT instance (shell to this address)",
+      "Value": { "Fn::GetAtt": [ "VCTSLabNatGw", "PublicIp" ] }
+    },
+    "Srv1IPAddr": {
+      "Description": "IP address of srv1 (internal)",
+      "Value": { "Fn::GetAtt": [ "VCTSLabSrv1", "PrivateIp" ] }
+    },
+    "Srv2IPAddr": {
+      "Description": "IP address of srv2 (internal)",
+      "Value": { "Fn::GetAtt": [ "VCTSLabSrv2", "PrivateIp" ] }
+    },
+    "ELBDNSName": {
+      "Description": "DNS host for the ELB",
+      "Value": { "Fn::GetAtt": [ "VCTSLabELB1", "DNSName" ] }
+    }
+  }
+}
